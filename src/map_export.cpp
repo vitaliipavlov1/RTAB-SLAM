@@ -1,12 +1,6 @@
-#pragma once
-
-// Saving the result: the optimized graph assembled into one PCL cloud, filtered,
-// measured and written next to the trajectory.
-
-#include "options.h"
+#include "map_export.h"
 
 #include <rtabmap/core/Graph.h>
-#include <rtabmap/core/Rtabmap.h>
 #include <rtabmap/core/SensorData.h>
 #include <rtabmap/core/Signature.h>
 #include <rtabmap/core/util3d.h>
@@ -21,11 +15,17 @@
 #include <map>
 
 namespace rtabmap_minimal {
+namespace {
 
-// Assemble the optimized map as a PCL cloud, filter it, print statistics, save it.
-// Note: the whole graph is materialized in memory, which is fine for a demo-sized
-// map; for a long session use rtabmap-export on the .db instead.
-inline void exportMap(rtabmap::Rtabmap & rtabmap, const Options & options)
+// Saved map: denser than the live view, still bounded.
+constexpr int kDecimation = 4;
+constexpr float kMaxDepth = 4.0f;
+constexpr float kMinDepth = 0.3f;
+constexpr float kVoxelSize = 0.03f;
+
+} // namespace
+
+bool exportMap(rtabmap::Rtabmap & rtabmap, const ExportPaths & paths)
 {
 	std::map<int, rtabmap::Transform> poses;
 	std::multimap<int, rtabmap::Link> links;
@@ -35,7 +35,7 @@ inline void exportMap(rtabmap::Rtabmap & rtabmap, const Options & options)
 	if(poses.empty())
 	{
 		printf("Map is empty, nothing to export.\n");
-		return;
+		return false;
 	}
 
 	std::map<int, double> stamps;
@@ -44,7 +44,7 @@ inline void exportMap(rtabmap::Rtabmap & rtabmap, const Options & options)
 		stamps.insert(std::make_pair(nodeId, signature.getStamp()));
 	}
 	// Format 11 = "id x y z qx qy qz qw" (RGBD-SLAM style, needs a stamp per pose).
-	rtabmap::graph::exportPoses(options.trajectoryPath,
+	rtabmap::graph::exportPoses(paths.trajectoryPath,
 			stamps.size() == poses.size() ? 11 : 0, poses, links, stamps);
 
 	pcl::PointCloud<pcl::PointXYZRGB>::Ptr assembled(new pcl::PointCloud<pcl::PointXYZRGB>);
@@ -63,7 +63,7 @@ inline void exportMap(rtabmap::Rtabmap & rtabmap, const Options & options)
 		}
 		// RGB-D -> point cloud (RTAB-Map's own converter, returns a PCL cloud in base frame)
 		pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud =
-				rtabmap::util3d::cloudRGBFromSensorData(data, kExportDecimation, kExportMaxDepth, kMinDepth);
+				rtabmap::util3d::cloudRGBFromSensorData(data, kDecimation, kMaxDepth, kMinDepth);
 		if(cloud->empty())
 		{
 			continue;
@@ -76,30 +76,32 @@ inline void exportMap(rtabmap::Rtabmap & rtabmap, const Options & options)
 	if(assembled->empty())
 	{
 		printf("Assembled cloud is empty (no depth data kept in the map).\n");
-		return;
+		return false;
 	}
 
 	const std::size_t rawSize = assembled->size();
 	pcl::PointCloud<pcl::PointXYZRGB>::Ptr filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
 	pcl::VoxelGrid<pcl::PointXYZRGB> voxel;
 	voxel.setInputCloud(assembled);
-	voxel.setLeafSize(kExportVoxelSize, kExportVoxelSize, kExportVoxelSize);
+	voxel.setLeafSize(kVoxelSize, kVoxelSize, kVoxelSize);
 	voxel.filter(*filtered);
 
 	pcl::PointXYZRGB min, max;
 	pcl::getMinMax3D(*filtered, min, max);
 
 	filtered->is_dense = false;
-	pcl::io::savePCDFileBinary(options.cloudPath, *filtered);
+	pcl::io::savePCDFileBinary(paths.cloudPath, *filtered);
 
 	printf("\n--- map ---\n");
 	printf("nodes (optimized poses) : %d\n", static_cast<int>(poses.size()));
 	printf("links (graph edges)     : %d\n", static_cast<int>(links.size()));
 	printf("cloud points            : %d raw -> %d after %.0f cm voxel filter\n",
-			static_cast<int>(rawSize), static_cast<int>(filtered->size()), kExportVoxelSize * 100.0f);
+			static_cast<int>(rawSize), static_cast<int>(filtered->size()), kVoxelSize * 100.0f);
 	printf("bounding box [m]        : x[%.2f %.2f] y[%.2f %.2f] z[%.2f %.2f]\n",
 			min.x, max.x, min.y, max.y, min.z, max.z);
-	printf("cloud saved             : %s\n", options.cloudPath.c_str());
-	printf("trajectory saved        : %s\n", options.trajectoryPath.c_str());
+	printf("cloud saved             : %s\n", paths.cloudPath.c_str());
+	printf("trajectory saved        : %s\n", paths.trajectoryPath.c_str());
+	return true;
 }
+
 } // namespace rtabmap_minimal

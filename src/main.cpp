@@ -10,155 +10,111 @@
 // Nothing here re-implements SLAM: features, matching, PnP, keyframes, loop
 // closure and the pose graph all live inside RTAB-Map.
 //
-// This file keeps the orchestration only; the pieces live next to it:
-//   control.h     stop/save flags and the signal handler
-//   options.h     tuning constants, command line, RTAB-Map parameters, database
-//   camera.h      RealSense capture and the IMU filter
-//   views.h       the three windows and the HUD
-//   export_map.h  saving the map as .pcd + trajectory
+// This file parses the command line and runs the loop; the parts it wires
+// together are independent modules:
+//   realsense_capture.h  the camera: newest RGB-D frame + IMU orientation
+//   rtabmap_app.h        RTAB-Map: parameters, database, odometry, mapping
+//   viewer.h             the three windows and the HUD
+//   map_export.h         saving the map as .pcd + trajectory
 
-#include "camera.h"
-#include "control.h"
-#include "export_map.h"
-#include "options.h"
-#include "views.h"
+#include "map_export.h"
+#include "realsense_capture.h"
+#include "rtabmap_app.h"
+#include "viewer.h"
 
-#include <rtabmap/core/IMU.h>
-#include <rtabmap/core/Odometry.h>
-#include <rtabmap/core/OdometryInfo.h>
-#include <rtabmap/core/Rtabmap.h>
 #include <rtabmap/core/SensorData.h>
-#include <rtabmap/core/Statistics.h>
-
 #include <rtabmap/utilite/ULogger.h>
-#include <rtabmap/utilite/UStl.h>
 #include <rtabmap/utilite/UTimer.h>
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
-#include <memory>
+#include <string>
 #include <thread>
 
 namespace rtabmap_minimal {
+namespace {
 
-struct Session
+constexpr double kStatusPeriod = 2.0;   // s, console status line
+constexpr double kFpsSmoothing = 0.1;   // exponential moving average weight
+
+static_assert(std::atomic<bool>::is_always_lock_free,
+		"the signal handler below may only touch lock-free atomics");
+std::atomic<bool> g_stop(false);
+
+void onSignal(int) { g_stop = true; }
+
+void installSignalHandler()
 {
-	const Options & options;
-	Capture & capture;
-	Camera & camera;
-	rtabmap::Odometry & odometry;
-	rtabmap::Rtabmap & rtabmap;
-	Windows & windows;
-	Hud hud;
+	struct sigaction action;
+	std::memset(&action, 0, sizeof(action));
+	action.sa_handler = onSignal;
+	sigaction(SIGINT, &action, nullptr);
+	sigaction(SIGTERM, &action, nullptr);
+}
+
+struct Options
+{
+	std::string configPath = "config/rtabmap_minimal.ini";
+	CaptureConfig capture;
+	AppConfig app;
+	ViewerConfig viewer;
+	ExportPaths paths;
 };
 
-// Takes the newest frameset, feeds RTAB-Map, refreshes the windows. Returns
-// false when there was nothing new to process.
-bool processOneFrame(Session & session, rs2::align & alignToColor)
+enum class ParseResult { kOk, kHelp, kError };
+
+void printUsage(const char * program)
 {
-	rs2::frameset frames;
-	rtabmap::IMU imu;
+	printf("Usage: %s [--config f.ini] [--db out.db] [--cloud out.pcd] [--continue]\n"
+	       "          [--no-imu] [--no-gui] [--no-view] [--no-map3d] [--no-map2d]\n"
+	       "          [--fps 15] [--size 640 480]\n", program);
+}
+
+ParseResult parseArgs(int argc, char ** argv, Options & options)
+{
+	for(int i = 1; i < argc; ++i)
 	{
-		const std::lock_guard<std::mutex> lock(session.capture.mutex);
-		if(session.capture.hasFrames)
+		const std::string arg = argv[i];
+		if(arg == "--config" && i + 1 < argc) options.configPath = argv[++i];
+		else if(arg == "--db" && i + 1 < argc) options.app.databasePath = argv[++i];
+		else if(arg == "--cloud" && i + 1 < argc) options.paths.cloudPath = argv[++i];
+		else if(arg == "--continue") options.app.continueMapping = true;
+		else if(arg == "--no-imu") options.capture.useImu = false;
+		else if(arg == "--no-gui") options.viewer = ViewerConfig{false, false, false};
+		else if(arg == "--no-view") options.viewer.camera = false;
+		else if(arg == "--no-map3d") options.viewer.map3d = false;
+		else if(arg == "--no-map2d") options.viewer.map2d = false;
+		else if(arg == "--fps" && i + 1 < argc) options.capture.fps = atoi(argv[++i]);
+		else if(arg == "--size" && i + 2 < argc)
 		{
-			frames = session.capture.frames;
-			session.capture.hasFrames = false;
-			if(session.options.useImu && session.capture.imuReady)
-			{
-				double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
-				session.capture.imuFilter->getOrientation(qx, qy, qz, qw);
-				const cv::Mat variance = cv::Mat::eye(3, 3, CV_64FC1) * kImuVariance;
-				imu = rtabmap::IMU(
-						cv::Vec4d(qx, qy, qz, qw), variance,
-						session.capture.gyro, variance,
-						session.capture.accel, variance,
-						session.camera.imuLocalTransform);
-			}
+			options.capture.width = atoi(argv[++i]);
+			options.capture.height = atoi(argv[++i]);
 		}
-	}
-	if(!frames)
-	{
-		return false;
-	}
-
-	const rs2::frameset aligned = alignToColor.process(frames);
-	const rs2::video_frame colorFrame = aligned.get_color_frame();
-	const rs2::depth_frame depthFrame = aligned.get_depth_frame();
-	if(!colorFrame || !depthFrame)
-	{
-		return false;   // the very first frameset of a D435i may have no depth
-	}
-
-	UTimer workTimer;
-	const cv::Mat rgb = cv::Mat(cv::Size(colorFrame.get_width(), colorFrame.get_height()),
-			CV_8UC3, const_cast<void*>(colorFrame.get_data())).clone();
-	const cv::Mat depth16 = cv::Mat(cv::Size(depthFrame.get_width(), depthFrame.get_height()),
-			CV_16UC1, const_cast<void*>(depthFrame.get_data()));
-	cv::Mat depth;
-	if(session.camera.depthInMillimeters)
-	{
-		depth = depth16.clone();   // RTAB-Map reads CV_16UC1 as millimeters
-	}
-	else
-	{
-		depth16.convertTo(depth, CV_32FC1, session.camera.depthScale);   // ... and CV_32FC1 as meters
-	}
-
-	rtabmap::SensorData data(rgb, depth, session.camera.model,
-			++session.hud.frames, colorFrame.get_timestamp() / 1000.0);
-	if(!imu.empty())
-	{
-		data.setIMU(imu);
-	}
-
-	// 1) odometry (RTAB-Map)
-	rtabmap::OdometryInfo info;
-	const rtabmap::Transform pose = session.odometry.process(data, &info);
-
-	// 2) mapping + loop closure (RTAB-Map). It throttles itself to Rtabmap/DetectionRate.
-	if(pose.isNull())
-	{
-		++session.hud.lost;
-	}
-	else if(session.rtabmap.process(data, pose, info.reg.covariance))
-	{
-		session.hud.mapNodes = static_cast<int>(session.rtabmap.getLocalOptimizedPoses().size());
-		if(session.windows.map3d)
+		else
 		{
-			updateLiveCloud(session.windows, session.rtabmap, data, pose);
-		}
-		if(session.windows.map2d)
-		{
-			updateGraphView(session.windows, session.rtabmap);
-		}
-		// Loop/Id covers both appearance-based loop closure and proximity detection.
-		const int loopId = static_cast<int>(uValue(session.rtabmap.getStatistics().data(),
-				rtabmap::Statistics::kLoopId(), 0.0f));
-		if(loopId > 0)
-		{
-			session.hud.lastLoopId = loopId;
-			++session.hud.loopClosures;
-			printf("Loop closure / proximity link with node %d (total %d)\n",
-					loopId, session.hud.loopClosures);
+			printUsage(argv[0]);
+			return arg == "--help" || arg == "-h" ? ParseResult::kHelp : ParseResult::kError;
 		}
 	}
 
-	session.hud.frameMs = workTimer.elapsed() * 1000.0;
-
-	if(session.windows.camera)
+	// The camera throws a rather cryptic error for impossible modes, so check here.
+	const CaptureConfig & capture = options.capture;
+	if(capture.width < 160 || capture.height < 120 || capture.width > 1920 || capture.height > 1080)
 	{
-		session.windows.camera->setImage(uCvMat2QImage(renderHud(rgb, pose, info, session.hud)));
+		printf("Unsupported resolution %dx%d.\n", capture.width, capture.height);
+		return ParseResult::kError;
 	}
-	if(session.windows.map3d && !pose.isNull())
+	if(capture.fps < 5 || capture.fps > 90)
 	{
-		session.windows.map3d->updateCameraTargetPosition(pose);   // also grows the trajectory
+		printf("Unsupported frame rate %d fps.\n", capture.fps);
+		return ParseResult::kError;
 	}
-	if(session.windows.map2d && !pose.isNull())
-	{
-		session.windows.map2d->updateReferentialPosition(pose);
-	}
-	return true;
+	return ParseResult::kOk;
 }
 
 // Wall time between two processed frames, which is the rate the user actually
@@ -173,48 +129,68 @@ void updateFps(Hud & hud, double period)
 	hud.fps = hud.fps == 0.0 ? instant : (1.0 - kFpsSmoothing) * hud.fps + kFpsSmoothing * instant;
 }
 
-void runLoop(Session & session)
+void runLoop(const Options & options, RealSenseCapture & capture, RtabmapApp & app, Viewer & viewer)
 {
-	rs2::align alignToColor(RS2_STREAM_COLOR);
-	UTimer loopTimer, viewerTimer, statusTimer;
+	Hud hud;
+	UTimer loopTimer, workTimer, statusTimer;
 
-	while(!g_stop)
+	while(!g_stop && !viewer.quitRequested())
 	{
-		if(!processOneFrame(session, alignToColor))
+		cv::Mat rgb, depth;
+		double stamp = 0.0;
+		rtabmap::IMU imu;
+		if(!capture.nextFrame(rgb, depth, stamp, imu))
 		{
 			std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			continue;
 		}
-		updateFps(session.hud, loopTimer.restart());
 
-		if(session.windows.map3d && viewerTimer.elapsed() > kViewerPeriod)
+		workTimer.restart();
+		rtabmap::SensorData data(rgb, depth, capture.model(), ++hud.frames, stamp);
+		if(!imu.empty())
 		{
-			viewerTimer.restart();
-			session.windows.map3d->refreshView();
+			data.setIMU(imu);
 		}
-		if(session.windows.app)
+
+		const FrameResult result = app.process(data);
+		if(result.pose.isNull())
 		{
-			session.windows.app->processEvents();
-			if(!session.windows.anyVisible())
+			++hud.lost;
+		}
+		if(result.nodeAdded)
+		{
+			hud.mapNodes = app.mapNodes();
+			viewer.onNewNode(app.rtabmap(), data, result.pose);
+			if(result.loopId > 0)
 			{
-				g_stop = true;   // every window closed
+				hud.lastLoopId = result.loopId;
+				++hud.loopClosures;
+				printf("Loop closure / proximity link with node %d (total %d)\n",
+						result.loopId, hud.loopClosures);
 			}
 		}
 
-		if(g_save)
+		hud.frameMs = workTimer.elapsed() * 1000.0;
+		updateFps(hud, loopTimer.restart());
+
+		viewer.showFrame(rgb, result.pose, result.odometry, hud);
+		viewer.followCamera(result.pose);
+		viewer.processEvents();
+
+		if(viewer.takeSaveRequest())
 		{
-			g_save = false;
-			exportMap(session.rtabmap, session.options);
+			exportMap(app.rtabmap(), options.paths);
 		}
 		else if(statusTimer.elapsed() > kStatusPeriod)
 		{
 			statusTimer.restart();
 			printf("frames %d (lost %d) | %.1f Hz | nodes %d | loops %d\n",
-					session.hud.frames, session.hud.lost, session.hud.fps,
-					session.hud.mapNodes, session.hud.loopClosures);
+					hud.frames, hud.lost, hud.fps, hud.mapNodes, hud.loopClosures);
 		}
 	}
 }
+
+} // namespace
 } // namespace rtabmap_minimal
 
 int main(int argc, char ** argv)
@@ -232,33 +208,26 @@ int main(int argc, char ** argv)
 	ULogger::setType(ULogger::kTypeConsole);
 	ULogger::setLevel(ULogger::kWarning);
 
-	const rtabmap::ParametersMap parameters = loadParameters(options);
+	const rtabmap::ParametersMap parameters =
+			loadParameters(options.configPath, options.capture.useImu, options.viewer.map2d);
 	printBackends(parameters);
 
-	Capture capture;
-	capture.imuFilter.reset(rtabmap::IMUFilter::create(parameters));
-	Camera camera;
-	if(!startCamera(options, capture, camera))
+	RealSenseCapture capture(options.capture);
+	if(!capture.start(parameters))
 	{
 		return 1;
 	}
 
-	std::unique_ptr<rtabmap::Odometry> odometry(rtabmap::Odometry::create(parameters));
-	rtabmap::Rtabmap rtabmap;
-	prepareDatabase(options);
-	rtabmap.init(parameters, options.dbPath);
-
-	Windows windows;
-	createWindows(options, argc, argv, parameters, windows);
+	RtabmapApp app(parameters, options.app);
+	Viewer viewer(options.viewer, parameters, argc, argv);
 
 	installSignalHandler();
 	printf("\nRunning. Move the camera slowly. [q] quit and save, [s] save now.\n\n");
 
-	Session session{options, capture, camera, *odometry, rtabmap, windows, Hud()};
 	int exitCode = 0;
 	try
 	{
-		runLoop(session);
+		runLoop(options, capture, app, viewer);
 	}
 	catch(const std::exception & e)
 	{
@@ -273,17 +242,10 @@ int main(int argc, char ** argv)
 	}
 
 	printf("\nStopping...\n");
-	try
-	{
-		camera.pipe.stop();
-	}
-	catch(const rs2::error & e)
-	{
-		printf("Camera already stopped: %s\n", e.what());
-	}
-	exportMap(rtabmap, options);
-	rtabmap.close(true);
-	printf("database saved          : %s\n", options.dbPath.c_str());
-	printf("inspect it with         : rtabmap-databaseViewer %s\n", options.dbPath.c_str());
+	capture.stop();
+	exportMap(app.rtabmap(), options.paths);
+	app.close();
+	printf("database saved          : %s\n", options.app.databasePath.c_str());
+	printf("inspect it with         : rtabmap-databaseViewer %s\n", options.app.databasePath.c_str());
 	return exitCode;
 }

@@ -32,7 +32,12 @@ find_package(RTABMap REQUIRED COMPONENTS core gui utilite)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 find_package(PCL REQUIRED COMPONENTS common io filters)
 
-add_executable(rtabmap_minimal src/main.cpp)
+add_executable(rtabmap_minimal
+  src/main.cpp
+  src/realsense_capture.cpp
+  src/rtabmap_app.cpp
+  src/viewer.cpp
+  src/map_export.cpp)
 target_compile_options(rtabmap_minimal PRIVATE -Wall -Wextra)
 target_link_libraries(rtabmap_minimal
   realsense2::realsense2
