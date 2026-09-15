@@ -1,0 +1,6 @@
+build/
+deps/
+.apt/
+*.db
+*.pcd
+rtabmap_minimal_trajectory.txt
