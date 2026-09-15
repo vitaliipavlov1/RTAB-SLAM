@@ -24,7 +24,12 @@
 #include <rtabmap/core/Signature.h>
 #include <rtabmap/core/Statistics.h>
 #include <rtabmap/core/util3d.h>
+#include <rtabmap/core/LocalGrid.h>
+#include <rtabmap/core/global_map/OccupancyGrid.h>
+#include <rtabmap/core/util3d_mapping.h>
+
 #include <rtabmap/gui/CloudViewer.h>
+#include <rtabmap/gui/GraphViewer.h>
 #include <rtabmap/gui/ImageView.h>
 
 #include <QApplication>
@@ -183,7 +188,8 @@ int main(int argc, char ** argv)
 	std::string trajectoryPath = "rtabmap_minimal_trajectory.txt";
 	bool useImu = true;
 	bool gui = true;
-	bool liveMap = true;
+	bool map3d = true;
+	bool map2d = true;
 	int width = 640, height = 480, fps = 15;
 
 	for(int i = 1; i < argc; ++i)
@@ -193,15 +199,17 @@ int main(int argc, char ** argv)
 		else if(a == "--db" && i + 1 < argc) dbPath = argv[++i];
 		else if(a == "--cloud" && i + 1 < argc) cloudPath = argv[++i];
 		else if(a == "--no-imu") useImu = false;
-		else if(a == "--no-gui") { gui = false; liveMap = false; }
+		else if(a == "--no-gui") { gui = false; map3d = false; map2d = false; }
 		else if(a == "--no-view") gui = false;
-		else if(a == "--no-map") liveMap = false;
+		else if(a == "--no-map3d") map3d = false;
+		else if(a == "--no-map2d") map2d = false;
 		else if(a == "--fps" && i + 1 < argc) fps = atoi(argv[++i]);
 		else if(a == "--size" && i + 2 < argc) { width = atoi(argv[++i]); height = atoi(argv[++i]); }
 		else
 		{
 			printf("Usage: %s [--config f.ini] [--db out.db] [--cloud out.pcd]\n"
-			       "          [--no-imu] [--no-gui] [--no-map] [--fps 15] [--size 640 480]\n", argv[0]);
+			       "          [--no-imu] [--no-gui] [--no-view] [--no-map3d] [--no-map2d]\n"
+			       "          [--fps 15] [--size 640 480]\n", argv[0]);
 			return a == "--help" ? 0 : 1;
 		}
 	}
@@ -330,8 +338,9 @@ int main(int argc, char ** argv)
 	std::unique_ptr<QApplication> app;
 	std::unique_ptr<rtabmap::ImageView> cameraViewer;
 	std::unique_ptr<rtabmap::CloudViewer> viewer;
+	std::unique_ptr<rtabmap::GraphViewer> graphViewer;
 	std::map<int, std::string> shownNodes;
-	if(gui || liveMap)
+	if(gui || map3d || map2d)
 	{
 		app.reset(new QApplication(argc, argv));
 	}
@@ -342,7 +351,7 @@ int main(int argc, char ** argv)
 		cameraViewer->resize(640, 480);
 		cameraViewer->show();
 	}
-	if(liveMap)
+	if(map3d)
 	{
 		viewer.reset(new rtabmap::CloudViewer());
 		viewer->setWindowTitle("rtabmap_minimal - map");
@@ -352,9 +361,23 @@ int main(int argc, char ** argv)
 		viewer->resize(800, 600);
 		viewer->show();
 	}
-	for(int i = 0; i < 2; ++i)
+	// 2D map: RTAB-Map's own graph view - occupancy grid + pose graph with
+	// neighbour links and loop closures, the same widget as in rtabmap's GUI.
+	rtabmap::LocalGridCache gridCache;
+	std::unique_ptr<rtabmap::OccupancyGrid> occupancyGrid;
+	if(map2d)
 	{
-		QWidget * w = i == 0 ? (QWidget*)cameraViewer.get() : (QWidget*)viewer.get();
+		graphViewer.reset(new rtabmap::GraphViewer());
+		graphViewer->setWindowTitle("rtabmap_minimal - 2D map");
+		graphViewer->setGridMapVisible(true);
+		graphViewer->resize(700, 600);
+		graphViewer->show();
+		occupancyGrid.reset(new rtabmap::OccupancyGrid(&gridCache, parameters));
+	}
+	for(int i = 0; i < 3; ++i)
+	{
+		QWidget * w = i == 0 ? (QWidget*)cameraViewer.get() :
+				(i == 1 ? (QWidget*)viewer.get() : (QWidget*)graphViewer.get());
 		if(w)
 		{
 			QObject::connect(new QShortcut(QKeySequence("s"), w), &QShortcut::activated,
@@ -465,6 +488,42 @@ int main(int argc, char ** argv)
 						}
 					}
 				}
+				if(graphViewer)
+				{
+					const rtabmap::Statistics & stats = rtabmap.getStatistics();
+					const rtabmap::Signature & last = stats.getLastSignatureData();
+					if(last.id() > 0 && last.sensorData().gridCellSize() > 0.0f)
+					{
+						// Local occupancy grids are computed by RTAB-Map itself
+						// (RGBD/CreateOccupancyGrid), we only assemble and show them.
+						gridCache.add(last.id(),
+								last.sensorData().gridGroundCellsRaw(),
+								last.sensorData().gridObstacleCellsRaw(),
+								last.sensorData().gridEmptyCellsRaw(),
+								last.sensorData().gridCellSize(),
+								last.sensorData().gridViewPoint());
+					}
+					const std::map<int, rtabmap::Transform> & graphPoses =
+							stats.poses().empty() ? rtabmap.getLocalOptimizedPoses() : stats.poses();
+					if(occupancyGrid->update(graphPoses))
+					{
+						float xMin = 0.0f, yMin = 0.0f;
+						const cv::Mat map8S = occupancyGrid->getMap(xMin, yMin);
+						if(!map8S.empty())
+						{
+							graphViewer->updateMap(rtabmap::util3d::convertMap2Image8U(map8S),
+									occupancyGrid->getCellSize(), xMin, yMin);
+						}
+					}
+					std::map<int, int> mapIds;
+					for(std::map<int, rtabmap::Transform>::const_iterator iter = graphPoses.begin();
+							iter != graphPoses.end(); ++iter)
+					{
+						mapIds.insert(mapIds.end(), std::make_pair(iter->first, 0));
+					}
+					graphViewer->updateGraph(graphPoses, stats.constraints(), mapIds);
+				}
+
 				// Loop/Id covers both appearance-based loop closure and proximity detection.
 				const int loopId = (int)uValue(rtabmap.getStatistics().data(),
 						rtabmap::Statistics::kLoopId(), 0.0f);
@@ -485,14 +544,21 @@ int main(int argc, char ** argv)
 		const double elapsed = timer.elapsed();
 		displayFps = displayFps == 0.0 ? 1.0 / elapsed : 0.9 * displayFps + 0.1 / elapsed;
 
-		if(viewer && viewerTimer.elapsed() > 0.2)
+		if((viewer || graphViewer) && viewerTimer.elapsed() > 0.2)
 		{
 			viewerTimer.restart();
-			if(!pose.isNull())
+			if(viewer)
 			{
-				viewer->updateCameraTargetPosition(pose); // also grows the trajectory
+				if(!pose.isNull())
+				{
+					viewer->updateCameraTargetPosition(pose); // also grows the trajectory
+				}
+				viewer->refreshView();
 			}
-			viewer->refreshView();
+			if(graphViewer && !pose.isNull())
+			{
+				graphViewer->updateReferentialPosition(pose);
+			}
 		}
 
 		if(cameraViewer)
@@ -521,9 +587,11 @@ int main(int argc, char ** argv)
 		if(app)
 		{
 			app->processEvents();
-			const bool cameraOpen = cameraViewer && cameraViewer->isVisible();
-			const bool mapOpen = viewer && viewer->isVisible();
-			if(!cameraOpen && !mapOpen)
+			const bool anyOpen =
+					(cameraViewer && cameraViewer->isVisible()) ||
+					(viewer && viewer->isVisible()) ||
+					(graphViewer && graphViewer->isVisible());
+			if(!anyOpen)
 			{
 				g_stop = true; // both windows closed
 			}
