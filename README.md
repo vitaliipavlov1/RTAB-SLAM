@@ -12,9 +12,18 @@ D435i (RGB + Depth, aligned + IMU)
    -> .db + облако точек (PCL) + траектория
 ```
 
-Весь код — один файл `src/main.cpp` (~970 строк с комментариями), из них собственно SLAM-вызовов
-пять: `Odometry::create`, `Odometry::process`, `Rtabmap::init`, `Rtabmap::process`,
-`Rtabmap::getGraph`. Остальное — захват с камеры, три окна и экспорт.
+Собственно SLAM-вызовов пять: `Odometry::create`, `Odometry::process`, `Rtabmap::init`,
+`Rtabmap::process`, `Rtabmap::getGraph`. Остальное — захват с камеры, три окна и экспорт:
+
+```text
+src/
+├── main.cpp        оркестрация: один кадр, главный цикл, завершение
+├── control.h       флаги остановки/сохранения и обработчик сигналов
+├── options.h       константы, командная строка, параметры RTAB-Map, база
+├── camera.h        захват с D435i и IMU-фильтр
+├── views.h         три окна и HUD
+└── export_map.h    сохранение карты: облако PCL, фильтр, статистика, файлы
+```
 
 ## Зависимости
 
