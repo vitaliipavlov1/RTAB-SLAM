@@ -26,13 +26,14 @@
 #include <rtabmap/core/util3d.h>
 #include <rtabmap/core/LocalGrid.h>
 #include <rtabmap/core/global_map/OccupancyGrid.h>
-#include <rtabmap/core/util3d_mapping.h>
 
 #include <rtabmap/gui/CloudViewer.h>
 #include <rtabmap/gui/GraphViewer.h>
 #include <rtabmap/gui/ImageView.h>
 
 #include <QApplication>
+#include <QRect>
+#include <QScreen>
 #include <QShortcut>
 
 #include <rtabmap/utilite/UConversion.h>
@@ -85,6 +86,44 @@ struct Capture
 	bool hasAccel = false;
 	bool imuReady = false;
 };
+
+// Put a window so that its *frame* occupies exactly the given rectangle, so the
+// three windows touch each other without overlapping.
+void placeWindow(QWidget * w, const QRect & target)
+{
+	w->setGeometry(target);
+	w->show();
+	// The window manager reports the decoration size only once the window is
+	// mapped, so let it answer before correcting for the frame.
+	for(int i = 0; i < 20 && w->frameGeometry() == w->geometry(); ++i)
+	{
+		QApplication::processEvents();
+	}
+	const QRect frame = w->frameGeometry();
+	const QRect inner = w->geometry();
+	w->setGeometry(
+			target.x() + (inner.x() - frame.x()),
+			target.y() + (inner.y() - frame.y()),
+			target.width() - (frame.width() - inner.width()),
+			target.height() - (frame.height() - inner.height()));
+}
+
+// RTAB-Map's occupancy grid (-1 unknown, 0 empty, 100 occupied) as a grey image:
+// white = free, black = obstacle, grey = unknown.
+cv::Mat gridToImage(const cv::Mat & map8S)
+{
+	cv::Mat image(map8S.size(), CV_8UC1, cv::Scalar(128));
+	for(int y = 0; y < map8S.rows; ++y)
+	{
+		const char * src = map8S.ptr<char>(y);
+		unsigned char * dst = image.ptr<unsigned char>(y);
+		for(int x = 0; x < map8S.cols; ++x)
+		{
+			dst[x] = src[x] == 0 ? 255 : (src[x] == 100 ? 0 : 128);
+		}
+	}
+	return image;
+}
 
 void putLine(cv::Mat & img, const std::string & text, int line)
 {
@@ -344,12 +383,21 @@ int main(int argc, char ** argv)
 	{
 		app.reset(new QApplication(argc, argv));
 	}
+	// Layout: camera top-left, 2D map top-right, 3D map centred below them.
+	QRect screen(0, 0, 1280, 720);
+	if(app && QApplication::primaryScreen())
+	{
+		screen = QApplication::primaryScreen()->availableGeometry();
+	}
+	const int halfW = screen.width() / 2;
+	const int halfH = screen.height() / 2;
+
 	if(gui)
 	{
 		cameraViewer.reset(new rtabmap::ImageView());
 		cameraViewer->setWindowTitle("rtabmap_minimal - camera");
-		cameraViewer->resize(640, 480);
-		cameraViewer->show();
+		cameraViewer->setBackgroundColor(QColor(30, 30, 30));
+		placeWindow(cameraViewer.get(), QRect(screen.x(), screen.y(), halfW, halfH));
 	}
 	if(map3d)
 	{
@@ -358,8 +406,8 @@ int main(int argc, char ** argv)
 		viewer->setBackgroundColor(QColor(30, 30, 30));
 		viewer->setGridShown(true);
 		viewer->setTrajectorySize(10000);
-		viewer->resize(800, 600);
-		viewer->show();
+		placeWindow(viewer.get(), QRect(screen.x() + halfW / 2, screen.y() + halfH,
+				halfW, screen.height() - halfH));
 	}
 	// 2D map: RTAB-Map's own graph view - occupancy grid + pose graph with
 	// neighbour links and loop closures, the same widget as in rtabmap's GUI.
@@ -370,8 +418,17 @@ int main(int argc, char ** argv)
 		graphViewer.reset(new rtabmap::GraphViewer());
 		graphViewer->setWindowTitle("rtabmap_minimal - 2D map");
 		graphViewer->setGridMapVisible(true);
-		graphViewer->resize(700, 600);
-		graphViewer->show();
+		graphViewer->setNodeColor(QColor(0, 0, 255));          // trajectory nodes
+		graphViewer->setNeighborColor(QColor(0, 0, 255));      // odometry links
+		graphViewer->setGlobalLoopClosureColor(QColor(255, 0, 0));
+		graphViewer->setLocalLoopClosureColor(QColor(255, 0, 0));
+		graphViewer->setNeighborMergedColor(QColor(0, 0, 255));
+		graphViewer->setNodeRadius(0.04f);
+		graphViewer->setLinkWidth(0.02f);
+		graphViewer->setEnsureFrameVisible(true);
+		graphViewer->setBackgroundBrush(QBrush(QColor(128, 128, 128))); // unknown space
+		placeWindow(graphViewer.get(), QRect(screen.x() + halfW, screen.y(),
+				screen.width() - halfW, halfH));
 		occupancyGrid.reset(new rtabmap::OccupancyGrid(&gridCache, parameters));
 	}
 	for(int i = 0; i < 3; ++i)
@@ -511,7 +568,7 @@ int main(int argc, char ** argv)
 						const cv::Mat map8S = occupancyGrid->getMap(xMin, yMin);
 						if(!map8S.empty())
 						{
-							graphViewer->updateMap(rtabmap::util3d::convertMap2Image8U(map8S),
+							graphViewer->updateMap(gridToImage(map8S),
 									occupancyGrid->getCellSize(), xMin, yMin);
 						}
 					}
