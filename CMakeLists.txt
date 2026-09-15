@@ -24,14 +24,15 @@ endif()
 list(APPEND CMAKE_PREFIX_PATH "/opt/ros/humble")
 
 find_package(realsense2 REQUIRED)
-find_package(RTABMap REQUIRED COMPONENTS core utilite)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui)
+find_package(RTABMap REQUIRED COMPONENTS core gui utilite)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 find_package(PCL REQUIRED COMPONENTS common io filters)
 
 add_executable(rtabmap_minimal src/main.cpp)
 target_link_libraries(rtabmap_minimal
   realsense2::realsense2
   rtabmap::core
+  rtabmap::gui
   rtabmap::utilite
   ${OpenCV_LIBS}
   ${PCL_LIBRARIES})

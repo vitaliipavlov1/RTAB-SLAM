@@ -24,7 +24,14 @@
 #include <rtabmap/core/Signature.h>
 #include <rtabmap/core/Statistics.h>
 #include <rtabmap/core/util3d.h>
+#include <rtabmap/gui/CloudViewer.h>
+#include <rtabmap/gui/ImageView.h>
+
+#include <QApplication>
+#include <QShortcut>
+
 #include <rtabmap/utilite/UConversion.h>
+#include <rtabmap/utilite/UCv2Qt.h>
 #include <rtabmap/utilite/UFile.h>
 #include <rtabmap/utilite/ULogger.h>
 #include <rtabmap/utilite/UStl.h>
@@ -36,7 +43,6 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
 
-#include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <atomic>
@@ -49,7 +55,9 @@
 namespace {
 
 std::atomic<bool> g_stop(false);
+std::atomic<bool> g_save(false);
 void onSignal(int) { g_stop = true; }
+
 
 // rs2_extrinsics rotation is column-major.
 rtabmap::Transform fromRealSense(const rs2_extrinsics & e)
@@ -175,6 +183,7 @@ int main(int argc, char ** argv)
 	std::string trajectoryPath = "rtabmap_minimal_trajectory.txt";
 	bool useImu = true;
 	bool gui = true;
+	bool liveMap = true;
 	int width = 640, height = 480, fps = 15;
 
 	for(int i = 1; i < argc; ++i)
@@ -184,13 +193,15 @@ int main(int argc, char ** argv)
 		else if(a == "--db" && i + 1 < argc) dbPath = argv[++i];
 		else if(a == "--cloud" && i + 1 < argc) cloudPath = argv[++i];
 		else if(a == "--no-imu") useImu = false;
-		else if(a == "--no-gui") gui = false;
+		else if(a == "--no-gui") { gui = false; liveMap = false; }
+		else if(a == "--no-view") gui = false;
+		else if(a == "--no-map") liveMap = false;
 		else if(a == "--fps" && i + 1 < argc) fps = atoi(argv[++i]);
 		else if(a == "--size" && i + 2 < argc) { width = atoi(argv[++i]); height = atoi(argv[++i]); }
 		else
 		{
 			printf("Usage: %s [--config f.ini] [--db out.db] [--cloud out.pcd]\n"
-			       "          [--no-imu] [--no-gui] [--fps 15] [--size 640 480]\n", argv[0]);
+			       "          [--no-imu] [--no-gui] [--no-map] [--fps 15] [--size 640 480]\n", argv[0]);
 			return a == "--help" ? 0 : 1;
 		}
 	}
@@ -310,13 +321,56 @@ int main(int argc, char ** argv)
 	UFile::erase(dbPath); // fresh session; remove this line to keep mapping an existing map
 	rtabmap.init(parameters, dbPath);
 
+	// Live 3D map window: one PCL cloud per map node, re-posed whenever RTAB-Map
+	// optimizes the graph. Updated only when a node is added (<= Rtabmap/DetectionRate),
+	// so it costs almost nothing between nodes.
+	// Both windows are RTAB-Map's own Qt widgets (the same CloudViewer that
+	// rtabmap-databaseViewer uses). PCLVisualizer is not usable here: its X11
+	// interactor segfaults on the first spinOnce with VTK 9.1 on this system.
+	std::unique_ptr<QApplication> app;
+	std::unique_ptr<rtabmap::ImageView> cameraViewer;
+	std::unique_ptr<rtabmap::CloudViewer> viewer;
+	std::map<int, std::string> shownNodes;
+	if(gui || liveMap)
+	{
+		app.reset(new QApplication(argc, argv));
+	}
+	if(gui)
+	{
+		cameraViewer.reset(new rtabmap::ImageView());
+		cameraViewer->setWindowTitle("rtabmap_minimal - camera");
+		cameraViewer->resize(640, 480);
+		cameraViewer->show();
+	}
+	if(liveMap)
+	{
+		viewer.reset(new rtabmap::CloudViewer());
+		viewer->setWindowTitle("rtabmap_minimal - map");
+		viewer->setBackgroundColor(QColor(30, 30, 30));
+		viewer->setGridShown(true);
+		viewer->setTrajectorySize(10000);
+		viewer->resize(800, 600);
+		viewer->show();
+	}
+	for(int i = 0; i < 2; ++i)
+	{
+		QWidget * w = i == 0 ? (QWidget*)cameraViewer.get() : (QWidget*)viewer.get();
+		if(w)
+		{
+			QObject::connect(new QShortcut(QKeySequence("s"), w), &QShortcut::activated,
+					[](){ g_save = true; });
+			QObject::connect(new QShortcut(QKeySequence("q"), w), &QShortcut::activated,
+					[](){ g_stop = true; });
+		}
+	}
+
 	rs2::align alignToColor(RS2_STREAM_COLOR);
 	signal(SIGINT, onSignal);
 	printf("\nRunning. Move the camera slowly. [q] quit and save, [s] save now.\n\n");
 
 	int frameId = 0, lostCount = 0, loopClosures = 0, lastLoopId = 0, mapNodes = 0;
 	double displayFps = 0.0;
-	UTimer timer, statusTimer;
+	UTimer timer, statusTimer, viewerTimer;
 
 	while(!g_stop)
 	{
@@ -385,6 +439,32 @@ int main(int argc, char ** argv)
 			if(rtabmap.process(data, pose, info.reg.covariance))
 			{
 				mapNodes = (int)rtabmap.getLocalOptimizedPoses().size();
+				if(viewer)
+				{
+					const int nodeId = rtabmap.getLastLocationId();
+					if(nodeId > 0 && shownNodes.find(nodeId) == shownNodes.end())
+					{
+						pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud =
+								rtabmap::util3d::cloudRGBFromSensorData(data, 8, 4.0f, 0.3f);
+						if(!cloud->empty())
+						{
+							const std::string id = uFormat("node%d", nodeId);
+							viewer->addCloud(id, cloud, pose);
+							shownNodes.insert(std::make_pair(nodeId, id));
+						}
+					}
+					// Loop closure moves old nodes: re-pose the clouds, never rebuild them.
+					const std::map<int, rtabmap::Transform> & optimized = rtabmap.getLocalOptimizedPoses();
+					for(std::map<int, std::string>::const_iterator iter = shownNodes.begin();
+							iter != shownNodes.end(); ++iter)
+					{
+						std::map<int, rtabmap::Transform>::const_iterator jter = optimized.find(iter->first);
+						if(jter != optimized.end() && !jter->second.isNull())
+						{
+							viewer->updateCloudPose(iter->second, jter->second);
+						}
+					}
+				}
 				// Loop/Id covers both appearance-based loop closure and proximity detection.
 				const int loopId = (int)uValue(rtabmap.getStatistics().data(),
 						rtabmap::Statistics::kLoopId(), 0.0f);
@@ -405,7 +485,17 @@ int main(int argc, char ** argv)
 		const double elapsed = timer.elapsed();
 		displayFps = displayFps == 0.0 ? 1.0 / elapsed : 0.9 * displayFps + 0.1 / elapsed;
 
-		if(gui)
+		if(viewer && viewerTimer.elapsed() > 0.2)
+		{
+			viewerTimer.restart();
+			if(!pose.isNull())
+			{
+				viewer->updateCameraTargetPosition(pose); // also grows the trajectory
+			}
+			viewer->refreshView();
+		}
+
+		if(cameraViewer)
 		{
 			float x = 0.f, y = 0.f, z = 0.f;
 			if(!pose.isNull())
@@ -425,16 +515,24 @@ int main(int argc, char ** argv)
 			{
 				cv::circle(rgb, iter->second.pt, 2, cv::Scalar(0, 255, 0), -1);
 			}
-			cv::imshow("rtabmap_minimal", rgb);
-			const int key = cv::waitKey(1);
-			if(key == 'q' || key == 27)
+			cameraViewer->setImage(uCvMat2QImage(rgb));
+		}
+
+		if(app)
+		{
+			app->processEvents();
+			const bool cameraOpen = cameraViewer && cameraViewer->isVisible();
+			const bool mapOpen = viewer && viewer->isVisible();
+			if(!cameraOpen && !mapOpen)
 			{
-				g_stop = true;
+				g_stop = true; // both windows closed
 			}
-			else if(key == 's')
-			{
-				exportMap(rtabmap, cloudPath, trajectoryPath, 4, 4.0f, 0.03f);
-			}
+		}
+
+		if(g_save)
+		{
+			g_save = false;
+			exportMap(rtabmap, cloudPath, trajectoryPath, 4, 4.0f, 0.03f);
 		}
 		else if(statusTimer.elapsed() > 2.0)
 		{
