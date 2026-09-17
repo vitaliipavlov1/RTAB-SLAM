@@ -20,6 +20,8 @@
 
 #include <pcl/point_types.h>
 
+#include <clocale>
+
 namespace rtabmap_minimal {
 namespace {
 
@@ -71,6 +73,10 @@ Viewer::Viewer(const ViewerConfig & config, const rtabmap::ParametersMap & param
 		return;
 	}
 	app_ = std::make_unique<QApplication>(argc, argv);
+	// QApplication calls setlocale(LC_ALL, ""), so a locale like ru_RU/es_ES
+	// makes printf and the trajectory export write "0,15" instead of "0.15".
+	// Numbers we write are data, not UI text: keep them in the C locale.
+	std::setlocale(LC_NUMERIC, "C");
 
 	// Layout: camera top-left, 2D map top-right, 3D map centred below them.
 	QRect screen(0, 0, 1280, 720);
