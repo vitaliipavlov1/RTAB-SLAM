@@ -86,6 +86,10 @@ void printBackends(const rtabmap::ParametersMap & parameters)
 RtabmapApp::RtabmapApp(const rtabmap::ParametersMap & parameters, const AppConfig & config) :
 	odometry_(rtabmap::Odometry::create(parameters))
 {
+	const float rate = uStr2Float(uValue(parameters,
+			rtabmap::Parameters::kRtabmapDetectionRate(), std::string("1.0")));
+	detectionPeriod_ = rate > 0.0f ? 1.0 / rate : 0.0;
+
 	prepareDatabase(config);
 	rtabmap_.init(parameters, config.databasePath);
 	open_ = true;
@@ -105,7 +109,17 @@ FrameResult RtabmapApp::process(rtabmap::SensorData & data)
 		return result;   // tracking lost, nothing to map
 	}
 
-	// RTAB-Map throttles itself to Rtabmap/DetectionRate, so every frame can be offered.
+	// Rtabmap::process() runs the whole mapping step - dictionary, loop closure
+	// search, graph optimization - on every call. The standalone rtabmap program
+	// drops frames in its own thread to honour Rtabmap/DetectionRate; a direct
+	// library call does not, so the rate is applied here. Without it mapping eats
+	// the time odometry needs and the camera ends up tracked a few times a second.
+	if(data.stamp() - lastProcessStamp_ < detectionPeriod_)
+	{
+		return result;   // odometry only, this frame is not offered to the map
+	}
+	lastProcessStamp_ = data.stamp();
+
 	result.nodeAdded = rtabmap_.process(data, result.pose, result.odometry.reg.covariance);
 	if(result.nodeAdded)
 	{

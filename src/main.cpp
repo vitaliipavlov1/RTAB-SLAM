@@ -174,7 +174,11 @@ void runLoop(const Options & options, RealSenseCapture & capture, RtabmapApp & a
 		updateFps(hud, loopTimer.restart());
 
 		viewer.showFrame(rgb, result.pose, result.odometry, hud);
-		viewer.followCamera(result.pose);
+		// The map windows draw the optimized graph, while odometry keeps running in
+		// its own frame: every loop closure moves one away from the other. The map
+		// correction is what RTAB-Map uses to express an odometry pose in the map,
+		// without it the position marker drifts off the map it belongs to.
+		viewer.followCamera(app.rtabmap().getMapCorrection() * result.pose);
 		viewer.processEvents();
 
 		if(viewer.takeSaveRequest())

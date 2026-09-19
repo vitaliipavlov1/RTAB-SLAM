@@ -61,6 +61,8 @@ public:
 private:
 	std::unique_ptr<rtabmap::Odometry> odometry_;
 	rtabmap::Rtabmap rtabmap_;
+	double detectionPeriod_ = 0.0;    // seconds between mapping steps, from Rtabmap/DetectionRate
+	double lastProcessStamp_ = 0.0;
 	bool open_ = false;
 };
 
