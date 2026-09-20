@@ -1,6 +1,15 @@
 build/
 deps/
 .apt/
+__pycache__/
+
+# Run artefacts: map database, point cloud, trajectory
 *.db
 *.pcd
-rtabmap_minimal_trajectory.txt
+*_trajectory.txt
+runs/
+
+# Captured datasets stay out of the repository
+dataset/
+*.png
+*.jpg

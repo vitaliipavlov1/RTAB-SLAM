@@ -1,4 +1,4 @@
-#include "map_export.h"
+#include "rtab_slam/map_export.hpp"
 
 #include <rtabmap/core/Graph.h>
 #include <rtabmap/core/SensorData.h>
@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <map>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 namespace {
 
 // Saved map: denser than the live view, still bounded.
@@ -104,4 +104,4 @@ bool exportMap(rtabmap::Rtabmap & rtabmap, const ExportPaths & paths)
 	return true;
 }
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

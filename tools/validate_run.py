@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Offline validation of a finished rtabmap_minimal run.
+"""Offline validation of a finished rtab_slam run.
 
 Everything is read back from what RTAB-Map already saved: the database is opened
 read-only and nothing is recomputed - no SLAM, no re-optimization. The checks
 look at our integration (D435i -> SensorData -> RTAB-Map) and at how the system
 behaved, not at RTAB-Map's algorithms.
 
-    ./scripts/validate_run.py rtabmap_minimal.db
-    ./scripts/validate_run.py --traj rtabmap_minimal_trajectory.txt rtabmap_minimal.db
-    ./scripts/validate_run.py runs/*.db        # one row per run + spread
+    ./tools/validate_run.py runs/t6_1.db
+    ./tools/validate_run.py --traj runs/t6_1_trajectory.txt runs/t6_1.db
+    ./tools/validate_run.py runs/*.db        # one row per run + spread
 
 Optimized poses come from the exported trajectory when --traj is given, and
 otherwise from the last optimization RTAB-Map stored in the database.
@@ -403,7 +403,7 @@ def print_comparison(runs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("databases", nargs="+", help="rtabmap_minimal .db file(s)")
+    parser.add_argument("databases", nargs="+", help="rtab_slam .db file(s)")
     parser.add_argument("--traj", help="exported trajectory of a single run")
     arguments = parser.parse_args()
     if arguments.traj and len(arguments.databases) > 1:

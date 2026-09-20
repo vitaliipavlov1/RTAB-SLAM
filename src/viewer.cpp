@@ -1,4 +1,4 @@
-#include "viewer.h"
+#include "rtab_slam/viewer.hpp"
 
 #include <rtabmap/core/Signature.h>
 #include <rtabmap/core/Statistics.h>
@@ -22,7 +22,7 @@
 
 #include <clocale>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 namespace {
 
 // Live 3D map: one cloud per map node, kept cheap on purpose.
@@ -38,7 +38,7 @@ constexpr unsigned char kGridFree = 255;
 constexpr unsigned char kGridOccupied = 0;
 constexpr unsigned char kGridUnknown = 128;
 
-// RTAB-Map's occupancy grid (-1 unknown, 0 empty, 100 occupied) as a grey image.
+// RTAB-Map's occupancy grid (-1 unknown, 0 empty, 100 occupied) as a gray image.
 cv::Mat gridToImage(const cv::Mat & map8S)
 {
 	cv::Mat image(map8S.size(), CV_8UC1, cv::Scalar(kGridUnknown));
@@ -78,7 +78,7 @@ Viewer::Viewer(const ViewerConfig & config, const rtabmap::ParametersMap & param
 	// Numbers we write are data, not UI text: keep them in the C locale.
 	std::setlocale(LC_NUMERIC, "C");
 
-	// Layout: camera top-left, 2D map top-right, 3D map centred below them.
+	// Layout: camera top-left, 2D map top-right, 3D map centered below them.
 	QRect screen(0, 0, 1280, 720);
 	if(QApplication::primaryScreen())
 	{
@@ -90,7 +90,7 @@ Viewer::Viewer(const ViewerConfig & config, const rtabmap::ParametersMap & param
 	if(config_.camera)
 	{
 		camera_ = std::make_unique<rtabmap::ImageView>();
-		camera_->setWindowTitle("rtabmap_minimal - camera");
+		camera_->setWindowTitle("RTAB-SLAM - camera");
 		camera_->setBackgroundColor(QColor(30, 30, 30));
 		place(camera_.get(), screen.x(), screen.y(), halfW, halfH);
 		bindShortcuts(camera_.get());
@@ -98,7 +98,7 @@ Viewer::Viewer(const ViewerConfig & config, const rtabmap::ParametersMap & param
 	if(config_.map2d)
 	{
 		map2d_ = std::make_unique<rtabmap::GraphViewer>();
-		map2d_->setWindowTitle("rtabmap_minimal - 2D map");
+		map2d_->setWindowTitle("RTAB-SLAM - 2D map");
 		map2d_->setGridMapVisible(true);
 		map2d_->setNodeColor(QColor(0, 0, 255));          // trajectory nodes
 		map2d_->setNeighborColor(QColor(0, 0, 255));      // odometry links
@@ -116,7 +116,7 @@ Viewer::Viewer(const ViewerConfig & config, const rtabmap::ParametersMap & param
 	if(config_.map3d)
 	{
 		map3d_ = std::make_unique<rtabmap::CloudViewer>();
-		map3d_->setWindowTitle("rtabmap_minimal - map");
+		map3d_->setWindowTitle("RTAB-SLAM - 3D map");
 		map3d_->setBackgroundColor(QColor(30, 30, 30));
 		map3d_->setGridShown(true);
 		map3d_->setTrajectorySize(kTrajectorySize);
@@ -324,4 +324,4 @@ void Viewer::processEvents()
 	}
 }
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

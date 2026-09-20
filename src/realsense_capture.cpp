@@ -1,9 +1,9 @@
-#include "realsense_capture.h"
+#include "rtab_slam/realsense_capture.hpp"
 
 #include <cmath>
 #include <cstdio>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 namespace {
 
 // Noise fed to RTAB-Map with every IMU sample. The orientation term weights the
@@ -181,14 +181,14 @@ bool RealSenseCapture::nextFrame(cv::Mat & rgb, cv::Mat & depth, double & stamp,
 			CV_16UC1, const_cast<void*>(depthFrame.get_data()));
 	if(depthInMillimeters_)
 	{
-		depth = depth16.clone();   // RTAB-Map reads CV_16UC1 as millimetres
+		depth = depth16.clone();   // RTAB-Map reads CV_16UC1 as millimeters
 	}
 	else
 	{
-		depth16.convertTo(depth, CV_32FC1, depthScale_);   // ... and CV_32FC1 as metres
+		depth16.convertTo(depth, CV_32FC1, depthScale_);   // ... and CV_32FC1 as meters
 	}
 	stamp = colorFrame.get_timestamp() / 1000.0;
 	return true;
 }
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

@@ -1,7 +1,9 @@
-"""Ручная съёмка RAW-датасета с Intel RealSense D435i.
+#!/usr/bin/env python3
+"""Manual capture of a raw dataset from an Intel RealSense D435i.
+
 This script only captures raw data. It does not calibrate anything and does not detect
-any target: ни ChArUco, ни ArUco, ни шахматной доски. Годность кадра решает только
-человек. Поток: live -> SPACE фиксирует frameset -> Y/ENTER сохранить, N/ESC отбросить.
+any target - no ChArUco, no ArUco, no chessboard. Whether a frame is usable is decided
+by the operator. Flow: live -> SPACE freezes a frameset -> Y/ENTER saves, N/ESC drops it.
 """
 
 import argparse, json, os, sys, time
@@ -15,8 +17,8 @@ TAGS = ("ir_left", "ir_right", "color", "depth")
 GREEN, WHITE, YELLOW, FONT = (120, 255, 120), (215,) * 3, (0, 230, 255), cv2.FONT_HERSHEY_SIMPLEX
 
 def store(out, mp, root, frames, index, im, meta) -> bool:
-    # четыре PNG плюс запись в metadata: либо всё целиком, либо ничего
-    def drop(paths):  # откат: отсутствие файла ошибкой не считаем
+    # Four PNGs plus one metadata entry: either all of it lands or none of it does.
+    def drop(paths):  # rollback; a missing file is not an error here
         for p in paths:
             try: os.remove(p)
             except OSError: pass
@@ -25,40 +27,40 @@ def store(out, mp, root, frames, index, im, meta) -> bool:
                 np.uint16 if t == "depth" else np.uint8) for t in TAGS}
     for t in TAGS:
         if im[t].shape != want[t][0] or im[t].dtype != want[t][1]:
-            print(f"  {t}: {im[t].shape} {im[t].dtype}, ожидалось {want[t][0]} "
-                  f"{np.dtype(want[t][1]).name}; не записано, snapshot цел")
+            print(f"  {t}: {im[t].shape} {im[t].dtype}, expected {want[t][0]} "
+                  f"{np.dtype(want[t][1]).name}; nothing written, the snapshot is intact")
             return False
     written = []
     for tag in TAGS:
         path = os.path.join(out, f"{index:06d}_{tag}.png")
-        if os.path.exists(path):  # чужой файл не трогаем и не откатываем
-            drop(written); print(f"  {index:06d}_{tag}.png уже существует, набор не записан")
+        if os.path.exists(path):  # someone else's file is neither touched nor rolled back
+            drop(written); print(f"  {index:06d}_{tag}.png already exists, the set was not written")
             return False
         try:
             ok = cv2.imwrite(path, im[tag])
         except Exception as exc:
-            print(f"  imwrite упал: {exc}")
+            print(f"  imwrite failed: {exc}")
             ok = False
-        if not ok:  # imwrite мог оставить частичный файл - убираем и его
+        if not ok:  # imwrite may have left a partial file behind - remove that too
             drop(written + [path])
-            print(f"  ошибка записи {index:06d}: откат набора, metadata не тронута")
+            print(f"  write error on {index:06d}: set rolled back, metadata untouched")
             return False
         written.append(path)
     frames.append(dict(meta, frame=index, session=root["session"],
                        files={t: os.path.basename(p) for t, p in zip(TAGS, written)}))
     root["frames"] = frames
-    try:  # tmp + atomic replace: прежняя metadata переживёт сбой записи
+    try:  # tmp + atomic replace: the previous metadata survives a failed write
         with open(mp + ".tmp", "w", encoding="utf-8") as fh:
             json.dump(root, fh, ensure_ascii=False, indent=1)
         os.replace(mp + ".tmp", mp)
     except Exception as exc:
         frames.pop(); drop(written + [mp + ".tmp"])
-        print(f"  metadata не записана ({exc}), набор откачен")
+        print(f"  metadata not written ({exc}), the set was rolled back")
         return False
     return True
 
 def preview(im, info, scale):
-    # уменьшение только для экрана; на диск идут исходные кадры без обработки
+    # Downscaling is for the screen only; the original frames go to disk untouched.
     tiles = []
     for tag in TAGS:
         if tag == "depth":
@@ -86,9 +88,9 @@ def main() -> int:
     try:
         frames = json.load(open(mp, encoding="utf-8"))["frames"] if os.path.exists(mp) else []
     except (ValueError, KeyError, OSError):
-        sys.exit(f"{mp} повреждён: почините или уберите, иначе потеряются прежние записи")
+        sys.exit(f"{mp} is corrupt: repair or remove it, otherwise earlier entries are lost")
     nums = [int(n[:6]) for n in os.listdir(args.out) if n[:6].isdigit() and n.endswith(".png")]
-    index = max(nums) + 1 if nums else 1  # пропуски и неполные наборы номер не переиспользуют
+    index = max(nums) + 1 if nums else 1  # gaps and partial sets never reuse a number
     pipe, sensor, was_emitter, proj, saved, times, shot = None, None, None, "unknown", 0, [], None
     try:
         cfg, wh, f = rs.config(), (args.width, args.height), args.fps
@@ -114,8 +116,8 @@ def main() -> int:
         s = streams["ir_left"]
         h, w, scale = s["height"], s["width"], GRID_W / 2 / s["width"]
         head = f"{root['camera']} {root['serial']} fw {root['firmware']}  {w}x{h}@{s['fps']}"
-        print(json.dumps(root, ensure_ascii=False, indent=1) + f"\n  сессия {root['session']}, "
-              f"набор {index:06d}\n  SPACE снять | Y/ENTER сохранить | N/ESC отбросить\n")
+        print(json.dumps(root, ensure_ascii=False, indent=1) + f"\n  session {root['session']}, "
+              f"set {index:06d}\n  SPACE capture | Y/ENTER save | N/ESC discard\n")
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
         cv2.imshow(WIN, np.zeros((int(h * scale) * 2 + PANEL, int(w * scale) * 2, 3), np.uint8))
         cv2.resizeWindow(WIN, int(w * scale) * 2, int(h * scale) * 2 + PANEL)
@@ -124,7 +126,7 @@ def main() -> int:
                 try:
                     fs = pipe.wait_for_frames(2000)
                 except RuntimeError:
-                    print("  камера не отдаёт кадры, выхожу"); break
+                    print("  the camera stopped delivering frames, exiting"); break
                 got = (fs.get_infrared_frame(1), fs.get_infrared_frame(2),
                        fs.get_color_frame(), fs.get_depth_frame())
                 if not all(got): continue
@@ -137,7 +139,7 @@ def main() -> int:
                 valid = np.count_nonzero(im["depth"]) / im["depth"].size * 100
             src, m = shot if shot else (im, meta)
             cv2.imshow(WIN, preview(src, [
-                ("LIVE   SPACE снять кадр, ESC выход", GREEN) if shot is None else
+                ("LIVE   SPACE capture a frame, ESC exit", GREEN) if shot is None else
                 ("CAPTURED FRAME - SAVE (Y/ENTER) OR DISCARD (N/ESC)", YELLOW),
                 (f"frame {m['rs_frame_number']}   rs ts {m['rs_timestamp_ms']:.0f} ms "
                  f"({m['timestamp_domain']})   host {m['host_monotonic_s']:.3f} s   "
@@ -146,24 +148,24 @@ def main() -> int:
             key = cv2.waitKey(1 if shot is None else 30) & 0xFF
             if shot is None:
                 if key == ESC: break
-                if key == SPACE:  # копии: буфер кадра RealSense переиспользует
+                if key == SPACE:  # copy: RealSense reuses its frame buffers
                     shot = ({t: im[t].copy() for t in TAGS}, meta)
             elif key in (ord("y"), ENTER) and store(args.out, mp, root, frames, index, *shot):
-                print(f"  сохранён набор {index:06d}")
+                print(f"  saved set {index:06d}")
                 index, saved, shot = index + 1, saved + 1, None
             elif key in (ord("n"), ESC):
-                shot = None; print("  кадр отброшен, на диск ничего не записано")
+                shot = None; print("  frame discarded, nothing was written to disk")
     except KeyboardInterrupt:
-        print("\n  прервано")
+        print("\n  interrupted")
     finally:
         if was_emitter is not None:
             try: sensor.set_option(rs.option.emitter_enabled, was_emitter)
-            except Exception as exc: print(f"  проектор не восстановлен: {exc}")
+            except Exception as exc: print(f"  the projector was not restored: {exc}")
         if pipe is not None:
             try: pipe.stop()
-            except Exception as exc: print(f"  pipeline не остановлен: {exc}")
+            except Exception as exc: print(f"  the pipeline was not stopped: {exc}")
         cv2.destroyAllWindows()
-    print(f"\n  снято {saved}, в metadata.json {len(frames)}, датасет {os.path.abspath(args.out)}")
+    print(f"\n  captured {saved}, {len(frames)} in metadata.json, dataset at {os.path.abspath(args.out)}")
     return 0
 
 if __name__ == "__main__":

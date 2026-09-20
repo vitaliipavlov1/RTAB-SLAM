@@ -2,7 +2,7 @@
 
 // Intel RealSense D435i capture.
 //
-// Owns the pipeline, the depth-to-colour alignment and RTAB-Map's Madgwick IMU
+// Owns the pipeline, the depth-to-color alignment and RTAB-Map's Madgwick IMU
 // filter, and hands the main loop ready-made RGB-D frames. Only the newest
 // frameset is kept: on a slow machine the older ones are dropped instead of
 // piling up latency.
@@ -20,7 +20,7 @@
 #include <memory>
 #include <mutex>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 
 struct CaptureConfig
 {
@@ -44,8 +44,8 @@ public:
 	bool start(const rtabmap::ParametersMap & parameters);
 	void stop();
 
-	// Newest frame, aligned to colour. Returns false when nothing new arrived:
-	// depth is CV_16UC1 in millimetres or CV_32FC1 in metres, whichever the
+	// Newest frame, aligned to color. Returns false when nothing new arrived:
+	// depth is CV_16UC1 in millimeters or CV_32FC1 in meters, whichever the
 	// camera's depth scale calls for, and imu is empty when IMU is off.
 	bool nextFrame(cv::Mat & rgb, cv::Mat & depth, double & stamp, rtabmap::IMU & imu);
 
@@ -74,4 +74,4 @@ private:
 	bool imuReady_ = false;
 };
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

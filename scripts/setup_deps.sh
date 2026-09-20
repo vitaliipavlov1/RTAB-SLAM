@@ -2,7 +2,7 @@
 # Fetch RTAB-Map (+ g2o/GTSAM) and librealsense2 into ./deps without root.
 #
 # If you do have root, this script is not needed at all:
-#     sudo apt install ros-humble-rtabmap librealsense2-dev
+#     sudo apt install ros-${ROS_DISTRO:-jazzy}-rtabmap librealsense2-dev
 # Everything below is just the rootless equivalent: the same .deb packages are
 # downloaded with a user-local apt state and unpacked into ./deps.
 set -euo pipefail
@@ -11,9 +11,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPS="$ROOT/deps"
 WORK="$ROOT/.apt"
 
-if [ -e /opt/ros/humble/lib/x86_64-linux-gnu/librtabmap_core.so ]; then
-  echo "System RTAB-Map found in /opt/ros/humble, nothing to fetch."
-elif [ -e "$DEPS/opt/ros/humble/lib/x86_64-linux-gnu/librtabmap_core.so" ]; then
+if [ -e /opt/ros/${ROS_DISTRO:-jazzy}/lib/x86_64-linux-gnu/librtabmap_core.so ]; then
+  echo "System RTAB-Map found in /opt/ros/${ROS_DISTRO:-jazzy}, nothing to fetch."
+elif [ -e "$DEPS/opt/ros/${ROS_DISTRO:-jazzy}/lib/x86_64-linux-gnu/librtabmap_core.so" ]; then
   echo "RTAB-Map already unpacked in $DEPS, nothing to fetch."
 else
   echo "== fetching RTAB-Map packages into $DEPS"
@@ -23,14 +23,15 @@ else
             -o "Dir::Cache::archives=$WORK/cache/archives"
             -o Debug::NoLocking=1)
   apt-get "${APT_OPTS[@]}" update
-  apt-get "${APT_OPTS[@]}" install -y --download-only ros-humble-rtabmap
+  apt-get "${APT_OPTS[@]}" install -y --download-only ros-${ROS_DISTRO:-jazzy}-rtabmap
   for deb in "$WORK"/cache/archives/*.deb; do dpkg-deb -x "$deb" "$DEPS"; done
   rm -rf "$WORK"
 fi
 
-# librealsense2: use the system one if present, otherwise copy an existing
-# local SDK prefix (headers + libs only, no tools).
-RS_SRC="${RS_SRC:-$HOME/projects/3d_vision/third_party/librealsense}"
+# librealsense2: use the system one if present, otherwise copy an existing local
+# SDK prefix (headers + libs only, no tools). Point RS_SRC at your own build:
+#     RS_SRC=/path/to/librealsense ./scripts/setup_deps.sh
+RS_SRC="${RS_SRC:-$HOME/librealsense}"
 if pkg-config --exists realsense2 2>/dev/null; then
   echo "System librealsense2 found, nothing to copy."
 elif [ -d "$DEPS/realsense2/include/librealsense2" ]; then

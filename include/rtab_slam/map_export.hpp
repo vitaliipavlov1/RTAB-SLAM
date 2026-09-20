@@ -10,17 +10,17 @@
 
 #include <string>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 
 struct ExportPaths
 {
-	std::string cloudPath = "rtabmap_minimal_cloud.pcd";
-	std::string trajectoryPath = "rtabmap_minimal_trajectory.txt";
+	std::string cloudPath = "rtab_slam_cloud.pcd";
+	std::string trajectoryPath = "rtab_slam_trajectory.txt";
 };
 
 // Prints a short summary of what was written. Returns false when the map is
 // still empty. Note that the whole graph is materialized in memory, which is
-// fine for a demo-sized map; for a long session use rtabmap-export on the .db.
+// fine for a room-sized map; for a long session use rtabmap-export on the .db.
 bool exportMap(rtabmap::Rtabmap & rtabmap, const ExportPaths & paths);
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

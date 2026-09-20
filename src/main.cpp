@@ -1,4 +1,4 @@
-// rtabmap_minimal - minimal working RTAB-Map SLAM demo for the Intel RealSense D435i.
+// RTAB-SLAM - RGB-D SLAM for the Intel RealSense D435i, built on RTAB-Map.
 //
 // Pipeline:
 //   D435i (RGB + Depth aligned to RGB + IMU)
@@ -12,15 +12,15 @@
 //
 // This file parses the command line and runs the loop; the parts it wires
 // together are independent modules:
-//   realsense_capture.h  the camera: newest RGB-D frame + IMU orientation
-//   rtabmap_app.h        RTAB-Map: parameters, database, odometry, mapping
-//   viewer.h             the three windows and the HUD
-//   map_export.h         saving the map as .pcd + trajectory
+//   realsense_capture.hpp  the camera: newest RGB-D frame + IMU orientation
+//   slam_backend.hpp       RTAB-Map: parameters, database, odometry, mapping
+//   viewer.hpp             the three windows and the HUD
+//   map_export.hpp         saving the map as .pcd + trajectory
 
-#include "map_export.h"
-#include "realsense_capture.h"
-#include "rtabmap_app.h"
-#include "viewer.h"
+#include "rtab_slam/map_export.hpp"
+#include "rtab_slam/realsense_capture.hpp"
+#include "rtab_slam/slam_backend.hpp"
+#include "rtab_slam/viewer.hpp"
 
 #include <rtabmap/core/SensorData.h>
 #include <rtabmap/utilite/ULogger.h>
@@ -36,7 +36,7 @@
 #include <string>
 #include <thread>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 namespace {
 
 constexpr double kStatusPeriod = 2.0;   // s, console status line
@@ -59,9 +59,9 @@ void installSignalHandler()
 
 struct Options
 {
-	std::string configPath = "config/rtabmap_minimal.ini";
+	std::string configPath = "config/rtab_slam.ini";
 	CaptureConfig capture;
-	AppConfig app;
+	SlamConfig slam;
 	ViewerConfig viewer;
 	ExportPaths paths;
 };
@@ -70,8 +70,8 @@ enum class ParseResult { kOk, kHelp, kError };
 
 void printUsage(const char * program)
 {
-	printf("Usage: %s [--config f.ini] [--db out.db] [--cloud out.pcd] [--continue]\n"
-	       "          [--no-imu] [--no-gui] [--no-view] [--no-map3d] [--no-map2d]\n"
+	printf("Usage: %s [--config f.ini] [--db out.db] [--cloud out.pcd] [--traj out.txt]\n"
+	       "          [--continue] [--no-imu] [--no-gui] [--no-view] [--no-map3d] [--no-map2d]\n"
 	       "          [--fps 15] [--size 640 480]\n", program);
 }
 
@@ -81,9 +81,10 @@ ParseResult parseArgs(int argc, char ** argv, Options & options)
 	{
 		const std::string arg = argv[i];
 		if(arg == "--config" && i + 1 < argc) options.configPath = argv[++i];
-		else if(arg == "--db" && i + 1 < argc) options.app.databasePath = argv[++i];
+		else if(arg == "--db" && i + 1 < argc) options.slam.databasePath = argv[++i];
 		else if(arg == "--cloud" && i + 1 < argc) options.paths.cloudPath = argv[++i];
-		else if(arg == "--continue") options.app.continueMapping = true;
+		else if(arg == "--traj" && i + 1 < argc) options.paths.trajectoryPath = argv[++i];
+		else if(arg == "--continue") options.slam.continueMapping = true;
 		else if(arg == "--no-imu") options.capture.useImu = false;
 		else if(arg == "--no-gui") options.viewer = ViewerConfig{false, false, false};
 		else if(arg == "--no-view") options.viewer.camera = false;
@@ -129,7 +130,7 @@ void updateFps(Hud & hud, double period)
 	hud.fps = hud.fps == 0.0 ? instant : (1.0 - kFpsSmoothing) * hud.fps + kFpsSmoothing * instant;
 }
 
-void runLoop(const Options & options, RealSenseCapture & capture, RtabmapApp & app, Viewer & viewer)
+void runLoop(const Options & options, RealSenseCapture & capture, SlamBackend & slam, Viewer & viewer)
 {
 	Hud hud;
 	UTimer loopTimer, workTimer, statusTimer;
@@ -152,15 +153,15 @@ void runLoop(const Options & options, RealSenseCapture & capture, RtabmapApp & a
 			data.setIMU(imu);
 		}
 
-		const FrameResult result = app.process(data);
+		const FrameResult result = slam.process(data);
 		if(result.pose.isNull())
 		{
 			++hud.lost;
 		}
 		if(result.nodeAdded)
 		{
-			hud.mapNodes = app.mapNodes();
-			viewer.onNewNode(app.rtabmap(), data, result.pose);
+			hud.mapNodes = slam.mapNodes();
+			viewer.onNewNode(slam.rtabmap(), data, result.pose);
 			if(result.loopId > 0)
 			{
 				hud.lastLoopId = result.loopId;
@@ -178,12 +179,12 @@ void runLoop(const Options & options, RealSenseCapture & capture, RtabmapApp & a
 		// its own frame: every loop closure moves one away from the other. The map
 		// correction is what RTAB-Map uses to express an odometry pose in the map,
 		// without it the position marker drifts off the map it belongs to.
-		viewer.followCamera(app.rtabmap().getMapCorrection() * result.pose);
+		viewer.followCamera(slam.rtabmap().getMapCorrection() * result.pose);
 		viewer.processEvents();
 
 		if(viewer.takeSaveRequest())
 		{
-			exportMap(app.rtabmap(), options.paths);
+			exportMap(slam.rtabmap(), options.paths);
 		}
 		else if(statusTimer.elapsed() > kStatusPeriod)
 		{
@@ -195,11 +196,11 @@ void runLoop(const Options & options, RealSenseCapture & capture, RtabmapApp & a
 }
 
 } // namespace
-} // namespace rtabmap_minimal
+} // namespace rtab_slam
 
 int main(int argc, char ** argv)
 {
-	using namespace rtabmap_minimal;
+	using namespace rtab_slam;
 
 	Options options;
 	switch(parseArgs(argc, argv, options))
@@ -222,7 +223,7 @@ int main(int argc, char ** argv)
 		return 1;
 	}
 
-	RtabmapApp app(parameters, options.app);
+	SlamBackend slam(parameters, options.slam);
 	Viewer viewer(options.viewer, parameters, argc, argv);
 
 	installSignalHandler();
@@ -231,7 +232,7 @@ int main(int argc, char ** argv)
 	int exitCode = 0;
 	try
 	{
-		runLoop(options, capture, app, viewer);
+		runLoop(options, capture, slam, viewer);
 	}
 	catch(const std::exception & e)
 	{
@@ -247,9 +248,9 @@ int main(int argc, char ** argv)
 
 	printf("\nStopping...\n");
 	capture.stop();
-	exportMap(app.rtabmap(), options.paths);
-	app.close();
-	printf("database saved          : %s\n", options.app.databasePath.c_str());
-	printf("inspect it with         : rtabmap-databaseViewer %s\n", options.app.databasePath.c_str());
+	exportMap(slam.rtabmap(), options.paths);
+	slam.close();
+	printf("database saved          : %s\n", options.slam.databasePath.c_str());
+	printf("inspect it with         : rtabmap-databaseViewer %s\n", options.slam.databasePath.c_str());
 	return exitCode;
 }

@@ -1,4 +1,4 @@
-#include "rtabmap_app.h"
+#include "rtab_slam/slam_backend.hpp"
 
 #include <rtabmap/core/Optimizer.h>
 #include <rtabmap/core/Statistics.h>
@@ -9,11 +9,11 @@
 
 #include <cstdio>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 namespace {
 
 // Wipes or keeps the previous map, and says which one it did.
-void prepareDatabase(const AppConfig & config)
+void prepareDatabase(const SlamConfig & config)
 {
 	if(!UFile::exists(config.databasePath))
 	{
@@ -83,7 +83,7 @@ void printBackends(const rtabmap::ParametersMap & parameters)
 			uValue(parameters, rtabmap::Parameters::kOptimizerStrategy(), std::string("?")).c_str());
 }
 
-RtabmapApp::RtabmapApp(const rtabmap::ParametersMap & parameters, const AppConfig & config) :
+SlamBackend::SlamBackend(const rtabmap::ParametersMap & parameters, const SlamConfig & config) :
 	odometry_(rtabmap::Odometry::create(parameters))
 {
 	const float rate = uStr2Float(uValue(parameters,
@@ -95,12 +95,12 @@ RtabmapApp::RtabmapApp(const rtabmap::ParametersMap & parameters, const AppConfi
 	open_ = true;
 }
 
-RtabmapApp::~RtabmapApp()
+SlamBackend::~SlamBackend()
 {
 	close();
 }
 
-FrameResult RtabmapApp::process(rtabmap::SensorData & data)
+FrameResult SlamBackend::process(rtabmap::SensorData & data)
 {
 	FrameResult result;
 	result.pose = odometry_->process(data, &result.odometry);
@@ -130,7 +130,7 @@ FrameResult RtabmapApp::process(rtabmap::SensorData & data)
 	return result;
 }
 
-void RtabmapApp::close()
+void SlamBackend::close()
 {
 	if(open_)
 	{
@@ -139,4 +139,4 @@ void RtabmapApp::close()
 	}
 }
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

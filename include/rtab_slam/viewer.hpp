@@ -32,7 +32,7 @@ class GraphViewer;
 class ImageView;
 }
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 
 struct ViewerConfig
 {
@@ -112,4 +112,4 @@ private:
 	bool save_ = false;
 };
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam

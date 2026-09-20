@@ -16,11 +16,11 @@
 #include <memory>
 #include <string>
 
-namespace rtabmap_minimal {
+namespace rtab_slam {
 
-struct AppConfig
+struct SlamConfig
 {
-	std::string databasePath = "rtabmap_minimal.db";
+	std::string databasePath = "rtab_slam.db";
 	bool continueMapping = false;   // keep an existing database instead of replacing it
 };
 
@@ -32,21 +32,21 @@ struct FrameResult
 	int loopId = 0;                   // >0: loop closure or proximity link with that node
 };
 
-// Reads config/rtabmap_minimal.ini when it exists, falls back to RTAB-Map's
+// Reads config/rtab_slam.ini when it exists, falls back to RTAB-Map's
 // defaults, and applies the two switches that depend on the command line.
 rtabmap::ParametersMap loadParameters(const std::string & iniPath, bool useImu, bool occupancyGrid);
 
 // Prints which optimizers this build of RTAB-Map actually has.
 void printBackends(const rtabmap::ParametersMap & parameters);
 
-class RtabmapApp
+class SlamBackend
 {
 public:
-	RtabmapApp(const rtabmap::ParametersMap & parameters, const AppConfig & config);
-	~RtabmapApp();
+	SlamBackend(const rtabmap::ParametersMap & parameters, const SlamConfig & config);
+	~SlamBackend();
 
-	RtabmapApp(const RtabmapApp &) = delete;
-	RtabmapApp & operator=(const RtabmapApp &) = delete;
+	SlamBackend(const SlamBackend &) = delete;
+	SlamBackend & operator=(const SlamBackend &) = delete;
 
 	// Runs odometry and, when odometry holds, mapping and loop closure.
 	FrameResult process(rtabmap::SensorData & data);
@@ -66,4 +66,4 @@ private:
 	bool open_ = false;
 };
 
-} // namespace rtabmap_minimal
+} // namespace rtab_slam
